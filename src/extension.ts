@@ -22,14 +22,59 @@ type CollectedFile = {
   loc: number;
 };
 
+type CollectionResult = {
+  files: CollectedFile[];
+  skipped: string[];
+};
+
+type OutputSegment = {
+  text: string;
+  required?: boolean;
+  label?: string;
+};
+
+type CopyContextResult = {
+  text: string;
+  truncated: boolean;
+  truncatedFiles: string[];
+  includedFiles: string[];
+  totalFiles: number;
+  skippedFiles: string[];
+  maxChars: number;
+};
+
 let statusItem: vscode.StatusBarItem;
 
 export function activate(context: vscode.ExtensionContext) {
   const cmd = vscode.commands.registerCommand('copyContext.copy', async () => {
     try {
-      const markdown = await buildContextMarkdown();
-      await vscode.env.clipboard.writeText(markdown);
-      vscode.window.showInformationMessage('已复制项目信息到剪贴板');
+      const result = await buildContextMarkdown();
+      await vscode.env.clipboard.writeText(result.text);
+
+      const infoMessage = result.truncated
+        ? (() => {
+            const truncatedDetail =
+              result.truncatedFiles.length > 0
+                ? `已裁剪 ${result.truncatedFiles.length} 个文件`
+                : '部分内容已裁剪';
+            const limitText =
+              result.maxChars > 0
+                ? `内容超过阈值 ${result.maxChars} 字符，${truncatedDetail}`
+                : truncatedDetail;
+            return `已复制项目信息到剪贴板（${limitText}，可在设置 copyContext.maxChars 调整）`;
+          })()
+        : '已复制项目信息到剪贴板';
+      vscode.window.showInformationMessage(infoMessage);
+
+      if (result.skippedFiles.length > 0) {
+        const previewCount = 5;
+        const previewList = result.skippedFiles.slice(0, previewCount).join(', ');
+        const extraCount = result.skippedFiles.length - previewCount;
+        const suffix = extraCount > 0 ? ` 等（仅展示前 ${previewCount} 个）` : '';
+        vscode.window.showWarningMessage(
+          `Copy Context: ${result.skippedFiles.length} 个文件读取失败，已跳过：${previewList}${suffix}`,
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       vscode.window.showErrorMessage(`Copy Context 失败: ${message}`);
@@ -47,7 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
-async function buildContextMarkdown(): Promise<string> {
+async function buildContextMarkdown(): Promise<CopyContextResult> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error('未找到正在打开的工作区');
@@ -58,27 +103,58 @@ async function buildContextMarkdown(): Promise<string> {
   const ignoreGlobs = config.get<string[]>('ignoreGlobs', []);
   const sourceStrategy = config.get<string>('sources', 'openEditors');
   const maxFiles = config.get<number>('maxFiles', 5);
+  const maxCharsSetting = config.get<number>('maxChars', 40000);
 
   const treeText = await generateProjectTree(workspaceFolder, treeDepth, ignoreGlobs);
-  const files = await collectRelevantFiles(workspaceFolder, sourceStrategy, maxFiles);
+  const { files, skipped } = await collectRelevantFiles(workspaceFolder, sourceStrategy, maxFiles);
 
   const now = new Date();
   const header = `# Context — ${workspaceFolder.name} — ${formatTimestamp(now)}`;
 
-  const lines: string[] = [header, '', `## Structure (depth=${treeDepth})`, treeText || '_No files found at this depth._', ''];
+  const structureText = treeText || '_No files found at this depth._';
 
-  lines.push(`## Files (${files.length})`);
+  const baseLines = [
+    header,
+    '',
+    `## Structure (depth=${treeDepth})`,
+    structureText,
+    '',
+    `## Files (${files.length})`,
+  ];
+
   if (files.length === 0) {
-    lines.push('', '_No files selected._');
-  } else {
+    baseLines.push('', '_No files selected._');
+  }
+
+  const segments: OutputSegment[] = [{ text: baseLines.join('\n'), required: true }];
+
+  if (files.length > 0) {
     for (const file of files) {
-      lines.push('', `### ${file.path} (${file.loc} LOC)`, '', '```' + file.language);
-      lines.push(file.content);
-      lines.push('```');
+      const codeFence = '```' + (file.language || '');
+      const sectionLines = ['', `### ${file.path} (${file.loc} LOC)`, '', codeFence, file.content, '```'];
+      segments.push({ text: sectionLines.join('\n'), label: file.path });
     }
   }
 
-  return lines.join('\n');
+  if (skipped.length > 0) {
+    const skippedLines = ['', '## Skipped Files', '', ...skipped.map((entry) => `- ${entry}`)];
+    segments.push({ text: skippedLines.join('\n'), required: true });
+  }
+
+  const { text, truncated, truncatedFiles, includedFiles } = composeSegments(
+    segments,
+    maxCharsSetting,
+  );
+
+  return {
+    text,
+    truncated,
+    truncatedFiles,
+    includedFiles,
+    totalFiles: files.length,
+    skippedFiles: skipped,
+    maxChars: Number.isFinite(maxCharsSetting) ? Math.floor(maxCharsSetting) : 0,
+  };
 }
 
 async function generateProjectTree(
@@ -137,7 +213,7 @@ async function collectRelevantFiles(
   workspaceFolder: vscode.WorkspaceFolder,
   sourceStrategy: string,
   maxFiles: number,
-): Promise<CollectedFile[]> {
+): Promise<CollectionResult> {
   const documents = new Map<string, vscode.TextDocument>();
 
   const activeEditor = vscode.window.activeTextEditor;
@@ -163,8 +239,18 @@ async function collectRelevantFiles(
 
   const rootPath = workspaceFolder.uri.fsPath;
   const collected: CollectedFile[] = [];
+  const skipped: string[] = [];
 
-  for (const document of Array.from(documents.values()).slice(0, Math.max(maxFiles, 0))) {
+  const docList = Array.from(documents.values());
+  const normalizedLimit = Number.isFinite(maxFiles) ? Math.floor(maxFiles) : undefined;
+  const limitedDocs =
+    normalizedLimit === undefined
+      ? docList
+      : normalizedLimit <= 0
+        ? []
+        : docList.slice(0, normalizedLimit);
+
+  for (const document of limitedDocs) {
     if (document.uri.scheme !== 'file') {
       continue;
     }
@@ -174,8 +260,28 @@ async function collectRelevantFiles(
       continue;
     }
 
-    const fileBuffer = await vscode.workspace.fs.readFile(document.uri);
-    const content = Buffer.from(fileBuffer).toString('utf8');
+    let content: string;
+    try {
+      if (document.isDirty || document.isUntitled) {
+        content = document.getText();
+      } else {
+        const fileBuffer = await vscode.workspace.fs.readFile(document.uri);
+        content = Buffer.from(fileBuffer).toString('utf8');
+      }
+    } catch (error) {
+      const originalReason = error instanceof Error ? error.message : String(error);
+      try {
+        content = document.getText();
+      } catch (fallbackError) {
+        const fallbackReason = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        const combinedReason = fallbackReason
+          ? `${originalReason}; ${fallbackReason}`
+          : originalReason;
+        skipped.push(`${relative}: ${combinedReason}`);
+        continue;
+      }
+    }
+
     const loc = countLines(content);
     const language = document.languageId || guessLanguageFromPath(document.uri.fsPath);
 
@@ -187,7 +293,7 @@ async function collectRelevantFiles(
     });
   }
 
-  return collected;
+  return { files: collected, skipped };
 }
 
 function buildTree(entries: TreeEntry[], rootName: string): string {
@@ -329,4 +435,101 @@ function guessLanguageFromPath(filePath: string): string {
     default:
       return '';
   }
+}
+
+function composeSegments(
+  segments: OutputSegment[],
+  maxChars: number | undefined,
+): {
+  text: string;
+  truncated: boolean;
+  truncatedFiles: string[];
+  includedFiles: string[];
+} {
+  const normalizedLimit = Number.isFinite(maxChars) ? Math.floor(maxChars ?? 0) : NaN;
+  const effectiveLimit = normalizedLimit > 0 ? normalizedLimit : undefined;
+
+  const textParts: string[] = [];
+  const includedFiles: string[] = [];
+  const truncatedFiles: string[] = [];
+
+  if (!effectiveLimit) {
+    for (const segment of segments) {
+      textParts.push(segment.text);
+      if (!segment.required && segment.label) {
+        includedFiles.push(segment.label);
+      }
+    }
+    return {
+      text: textParts.join(''),
+      truncated: false,
+      truncatedFiles: [],
+      includedFiles,
+    };
+  }
+
+  let currentLength = 0;
+  let truncated = false;
+  let optionalLimitReached = false;
+  let breakIndex = segments.length;
+
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    const segmentLength = segment.text.length;
+
+    if (segment.required) {
+      if (currentLength + segmentLength <= effectiveLimit) {
+        textParts.push(segment.text);
+        currentLength += segmentLength;
+      } else {
+        const remaining = effectiveLimit - currentLength;
+        if (remaining > 0) {
+          textParts.push(segment.text.slice(0, remaining));
+          currentLength += remaining;
+        }
+        truncated = true;
+        breakIndex = index;
+        break;
+      }
+      continue;
+    }
+
+    if (optionalLimitReached) {
+      if (segment.label) {
+        truncatedFiles.push(segment.label);
+      }
+      truncated = true;
+      continue;
+    }
+
+    if (currentLength + segmentLength <= effectiveLimit) {
+      textParts.push(segment.text);
+      currentLength += segmentLength;
+      if (segment.label) {
+        includedFiles.push(segment.label);
+      }
+    } else {
+      optionalLimitReached = true;
+      if (segment.label) {
+        truncatedFiles.push(segment.label);
+      }
+      truncated = true;
+    }
+  }
+
+  if (truncated && breakIndex < segments.length - 1) {
+    for (let i = breakIndex + 1; i < segments.length; i++) {
+      const segment = segments[i];
+      if (!segment.required && segment.label) {
+        truncatedFiles.push(segment.label);
+      }
+    }
+  }
+
+  return {
+    text: textParts.join(''),
+    truncated,
+    truncatedFiles,
+    includedFiles,
+  };
 }
