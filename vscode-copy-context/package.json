@@ -1,0 +1,22 @@
+{
+  "name": "vscode-copy-context",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "@types/vscode": "^1.105.0",
+    "esbuild": "^0.25.11",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.3",
+    "ignore": "^7.0.5"
+  }
+}

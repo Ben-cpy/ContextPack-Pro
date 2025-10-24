@@ -1,2 +1,3 @@
-# ContextPack-Pro
-One-click packs your current coding context (selected files/folders + optional git diff) and pastes it into your AI chat.
+# vscode-copy-context
+
+VS Code extension project scaffold. Update this README with usage instructions and features as development progresses.
