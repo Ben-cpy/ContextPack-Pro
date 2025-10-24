@@ -141,3 +141,6 @@ vite.config.ts.timestamp-*
 CLAUDE.md
 AGENTS.md
 # .vscode
+
+# VSIX packages (上传到 Release，不提交到 git)
+*.vsix

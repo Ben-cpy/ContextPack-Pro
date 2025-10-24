@@ -3,8 +3,26 @@
   "displayName": "ContextPack-Pro",
   "description": "Copy the current project context to your clipboard from VS Code.",
   "version": "0.0.1",
-  "publisher": "your-id",
+  "publisher": "Ben-cpy",
+  "author": "Ben",
   "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ben-cpy/ContextPack-Pro"
+  },
+  "bugs": {
+    "url": "https://github.com/Ben-cpy/ContextPack-Pro/issues"
+  },
+  "keywords": [
+    "context",
+    "clipboard",
+    "ai",
+    "project",
+    "snapshot",
+    "copy",
+    "markdown"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },

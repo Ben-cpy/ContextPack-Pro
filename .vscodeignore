@@ -1,0 +1,27 @@
+# 源代码（已编译到 out/）
+src/
+tsconfig.json
+
+# 开发依赖（已打包到 out/extension.js）
+node_modules/
+
+# 开发配置
+.vscode/
+.github/
+.gitignore
+
+# 开发文档
+CLAUDE.md
+AGENTS.md
+
+# 编译产物（保留 out/）
+dist/
+
+# 可疑的大文件夹
+vscode-copy-context/
+
+# 其他不需要的文件
+*.vsix
+package-lock.json
+.eslintrc*
+.prettierrc*
