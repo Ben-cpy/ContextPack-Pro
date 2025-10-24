@@ -1,31 +1,24 @@
 # ContextPack-Pro
 
-ContextPack-Pro is a VS Code extension that copies a concise yet informative snapshot of your project—structure and key files—straight to the clipboard.
+Stop wasting time copying and pasting code snippets. One click gets your entire project context—structure, files, and all—ready to paste into any AI chat.
 
-## Features
+## Why?
 
-- 🧭 **Minimal UI:** A single status bar button triggers the clipboard action, and the same command is available as `Copy Project Context` from the Command Palette.
-- 📋 **Rich clipboard payload:** Captures a Markdown document containing the project tree and the most relevant file contents.
-- 🧠 **Smart relevance tracking:** Prioritises the active editor plus the most frequently opened files from your recent work.
-- 🌲 **Configurable structure views:** Choose between a full directory listing or a smart mode that expands only the tracked files within the top-level tree.
-- 🔒 **Privacy reminder:** On first use, ContextPack-Pro gently reminds you that clipboard contents might include sensitive information.
+LLMs work better with more upfront context. Instead of explaining your codebase piece by piece, just give it everything it needs in one shot. Saves time, saves tokens, saves headaches.
 
-## Installation & Build
+## Who's it for?
 
-1. Install dependencies: `npm install`
-2. Build the extension: `npm run build`
-3. (Optional) Watch for changes during development: `npm run watch`
-4. Launch an Extension Development Host from VS Code to try it out.
+- You're tired of manually copying code into ChatGPT/Claude
+- You use VS Code AI chat and want clean, relevant context
+- You need to share project snapshots quickly
 
-To create a VSIX package for distribution, install `vsce` globally (`npm i -g @vscode/vsce`) and run `vsce package`.
 
-## Usage
+## How to use
 
-1. Click the `ContextPack-Pro` status bar item or run **Copy Project Context** from the Command Palette.
-2. The extension gathers the project structure, tracks your most relevant files, and copies the resulting Markdown to the clipboard.
-3. Paste the Markdown into an issue, document, or prompt as needed.
+1. Click the `ContextPack-Pro` button in the bottom left status bar (or use Command Palette → **Copy Project Context**)
+2. Everything gets copied to your clipboard as nice, formatted Markdown
+3. Paste wherever you need it—AI chat, docs, issues, whatever
 
-All runtime notifications are in English. The initial privacy warning appears only once per user unless you reset VS Code's global state.
 
 ## Settings
 
@@ -38,14 +31,14 @@ All runtime notifications are in English. The initial privacy warning appears on
 | `copyContext.maxChars` | `40000` | Character limit for the clipboard payload; optional sections are truncated if the limit is exceeded. |
 | `copyContext.structureMode` | `smart` | Select `full` for the entire tree or `smart` to expand only the tracked files while keeping the top-level overview. |
 
-## Privacy & Limitations
+## Heads up
 
-- Clipboard payloads may include proprietary or sensitive information—review before sharing externally.
-- Binary files and files blocked by ignore rules are skipped automatically.
-- Extremely large repositories may require adjusting `copyContext.maxChars` or `copyContext.maxFiles`.
+- Check what you're copying before pasting it publicly—could have sensitive stuff
+- Binary files and ignored folders get skipped automatically
+- Huge repos? Tweak `maxChars` or `maxFiles` in settings
 
-## Roadmap Highlights
+## Coming soon
 
-- Change detection for diffs (`git diff` integration).
-- Improved relevance heuristics and chunked outputs for long files.
-- Intelligent grouping for multi-root workspaces.
+- `git diff` support to show what changed
+- Smarter file selection and chunking for long files
+- Better handling of multi-root workspaces
