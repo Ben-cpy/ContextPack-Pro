@@ -13,6 +13,7 @@ type TreeNode = {
   isDir: boolean;
   children: TreeNode[];
   childMap: Map<string, TreeNode>;
+  path: string;
 };
 
 type CollectedFile = {
@@ -45,6 +46,14 @@ type CopyContextResult = {
 
 let statusItem: vscode.StatusBarItem;
 
+type WorkspaceTrackingState = {
+  history: string[];
+};
+
+const PRIVACY_NOTICE_KEY = 'copyContext.privacyNoticeAcknowledged';
+const workspaceTrackers = new Map<string, WorkspaceTrackingState>();
+let suppressTracking = false;
+
 export function activate(context: vscode.ExtensionContext) {
   const cmd = vscode.commands.registerCommand('copyContext.copy', async () => {
     try {
@@ -55,39 +64,50 @@ export function activate(context: vscode.ExtensionContext) {
         ? (() => {
             const truncatedDetail =
               result.truncatedFiles.length > 0
-                ? `已裁剪 ${result.truncatedFiles.length} 个文件`
-                : '部分内容已裁剪';
+                ? `truncated ${result.truncatedFiles.length} file section(s)`
+                : 'truncated part of the content';
             const limitText =
               result.maxChars > 0
-                ? `内容超过阈值 ${result.maxChars} 字符，${truncatedDetail}`
+                ? `content exceeded the ${result.maxChars} character limit and ${truncatedDetail}`
                 : truncatedDetail;
-            return `已复制项目信息到剪贴板（${limitText}，可在设置 copyContext.maxChars 调整）`;
+            return `Project context copied to clipboard (${limitText}. Update copyContext.maxChars to adjust the limit).`;
           })()
-        : '已复制项目信息到剪贴板';
+        : 'Project context copied to clipboard.';
       vscode.window.showInformationMessage(infoMessage);
 
       if (result.skippedFiles.length > 0) {
         const previewCount = 5;
         const previewList = result.skippedFiles.slice(0, previewCount).join(', ');
         const extraCount = result.skippedFiles.length - previewCount;
-        const suffix = extraCount > 0 ? ` 等（仅展示前 ${previewCount} 个）` : '';
+        const suffix = extraCount > 0 ? ` and ${extraCount} more` : '';
         vscode.window.showWarningMessage(
-          `Copy Context: ${result.skippedFiles.length} 个文件读取失败，已跳过：${previewList}${suffix}`,
+          `ContextPack-Pro: Skipped ${result.skippedFiles.length} file(s) due to read errors: ${previewList}${suffix}`,
         );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      vscode.window.showErrorMessage(`Copy Context 失败: ${message}`);
+      vscode.window.showErrorMessage(`ContextPack-Pro failed to copy project context: ${message}`);
     }
   });
   context.subscriptions.push(cmd);
 
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusItem.text = '$(files) Copy Context';
+  statusItem.text = '$(files) ContextPack-Pro';
   statusItem.command = 'copyContext.copy';
   statusItem.tooltip = 'Copy project structure and related files to clipboard';
   statusItem.show();
   context.subscriptions.push(statusItem);
+
+  if (vscode.window.activeTextEditor) {
+    trackDocument(vscode.window.activeTextEditor.document);
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((document) => trackDocument(document)),
+    vscode.window.onDidChangeActiveTextEditor((editor) => trackDocument(editor?.document ?? undefined)),
+  );
+
+  void showPrivacyNoticeOnce(context);
 }
 
 export function deactivate() {}
@@ -95,7 +115,7 @@ export function deactivate() {}
 async function buildContextMarkdown(): Promise<CopyContextResult> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
-    throw new Error('未找到正在打开的工作区');
+    throw new Error('No workspace folder is open.');
   }
 
   const config = vscode.workspace.getConfiguration('copyContext');
@@ -104,19 +124,38 @@ async function buildContextMarkdown(): Promise<CopyContextResult> {
   const sourceStrategy = config.get<string>('sources', 'openEditors');
   const maxFiles = config.get<number>('maxFiles', 5);
   const maxCharsSetting = config.get<number>('maxChars', 40000);
+  const structureModeSetting = config.get<string>('structureMode', 'smart');
+  const structureMode = structureModeSetting === 'full' ? 'full' : 'smart';
+  const trackedPaths = getTrackedFilePaths(workspaceFolder, vscode.window.activeTextEditor?.document);
 
-  const treeText = await generateProjectTree(workspaceFolder, treeDepth, ignoreGlobs);
-  const { files, skipped } = await collectRelevantFiles(workspaceFolder, sourceStrategy, maxFiles);
+  const treeText = await generateProjectTree(
+    workspaceFolder,
+    treeDepth,
+    ignoreGlobs,
+    structureMode,
+    trackedPaths,
+  );
+  const { files, skipped } = await collectRelevantFiles(
+    workspaceFolder,
+    sourceStrategy,
+    maxFiles,
+    trackedPaths,
+  );
 
   const now = new Date();
   const header = `# Context — ${workspaceFolder.name} — ${formatTimestamp(now)}`;
 
   const structureText = treeText || '_No files found at this depth._';
 
+  const structureHeading =
+    structureMode === 'full'
+      ? `## Structure (mode=full, depth=${treeDepth})`
+      : '## Structure (mode=smart, top-level overview + tracked files)';
+
   const baseLines = [
     header,
     '',
-    `## Structure (depth=${treeDepth})`,
+    structureHeading,
     structureText,
     '',
     `## Files (${files.length})`,
@@ -161,6 +200,8 @@ async function generateProjectTree(
   workspaceFolder: vscode.WorkspaceFolder,
   treeDepth: number,
   ignoreGlobs: string[],
+  structureMode: string,
+  trackedPaths: string[],
 ): Promise<string> {
   const rootPath = workspaceFolder.uri.fsPath;
   const ig = ignore();
@@ -181,6 +222,15 @@ async function generateProjectTree(
   }
 
   const patterns = ['*', '**/*'];
+  const trackedDepth = trackedPaths.reduce((max, entry) => {
+    if (!entry) {
+      return max;
+    }
+    const depth = entry.split('/').length;
+    return depth > max ? depth : max;
+  }, 1);
+  const effectiveDepth = structureMode === 'smart' ? Math.max(treeDepth, trackedDepth) : treeDepth;
+
   const rawEntries = await fg(patterns, {
     cwd: rootPath,
     dot: true,
@@ -188,7 +238,7 @@ async function generateProjectTree(
     followSymbolicLinks: false,
     markDirectories: true,
     unique: true,
-    deep: treeDepth,
+    deep: effectiveDepth,
   });
 
   const entries: TreeEntry[] = [];
@@ -205,7 +255,23 @@ async function generateProjectTree(
     entries.push({ path: normalized, isDir });
   }
 
-  const tree = buildTree(entries, workspaceFolder.name);
+  const expandPaths = new Set<string>();
+  if (structureMode === 'smart') {
+    for (const relative of trackedPaths) {
+      if (!relative) {
+        continue;
+      }
+      const parts = relative.split('/');
+      for (let index = 1; index < parts.length; index++) {
+        const prefix = parts.slice(0, index).join('/');
+        if (prefix) {
+          expandPaths.add(prefix);
+        }
+      }
+    }
+  }
+
+  const tree = buildTree(entries, workspaceFolder.name, structureMode, expandPaths);
   return tree;
 }
 
@@ -213,23 +279,28 @@ async function collectRelevantFiles(
   workspaceFolder: vscode.WorkspaceFolder,
   sourceStrategy: string,
   maxFiles: number,
+  trackedPaths: string[],
 ): Promise<CollectionResult> {
   const documents = new Map<string, vscode.TextDocument>();
+  const uniqueTrackedPaths = Array.from(
+    new Set(trackedPaths.filter((entry): entry is string => Boolean(entry))),
+  );
 
   const activeEditor = vscode.window.activeTextEditor;
-  if (sourceStrategy === 'activeOnly') {
+  if (sourceStrategy === 'smart') {
+    if (activeEditor) {
+      documents.set(activeEditor.document.uri.toString(), activeEditor.document);
+    }
+  } else if (sourceStrategy === 'activeOnly') {
     if (activeEditor) {
       documents.set(activeEditor.document.uri.toString(), activeEditor.document);
     }
   } else {
-    const editors = sourceStrategy === 'openEditors' || sourceStrategy === 'smart'
+    const editors = sourceStrategy === 'openEditors'
       ? vscode.window.visibleTextEditors
       : [];
     for (const editor of editors) {
       documents.set(editor.document.uri.toString(), editor.document);
-    }
-    if (sourceStrategy === 'smart' && activeEditor) {
-      documents.set(activeEditor.document.uri.toString(), activeEditor.document);
     }
   }
 
@@ -240,6 +311,26 @@ async function collectRelevantFiles(
   const rootPath = workspaceFolder.uri.fsPath;
   const collected: CollectedFile[] = [];
   const skipped: string[] = [];
+
+  if (sourceStrategy === 'smart') {
+    for (const relative of uniqueTrackedPaths) {
+      const uri = vscode.Uri.joinPath(workspaceFolder.uri, relative);
+      const key = uri.toString();
+      if (documents.has(key)) {
+        continue;
+      }
+      try {
+        suppressTracking = true;
+        const document = await vscode.workspace.openTextDocument(uri);
+        documents.set(key, document);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        skipped.push(`${relative}: ${reason}`);
+      } finally {
+        suppressTracking = false;
+      }
+    }
+  }
 
   const docList = Array.from(documents.values());
   const normalizedLimit = Number.isFinite(maxFiles) ? Math.floor(maxFiles) : undefined;
@@ -296,12 +387,119 @@ async function collectRelevantFiles(
   return { files: collected, skipped };
 }
 
-function buildTree(entries: TreeEntry[], rootName: string): string {
+function trackDocument(document: vscode.TextDocument | undefined): void {
+  if (suppressTracking) {
+    return;
+  }
+  if (!document || document.uri.scheme !== 'file') {
+    return;
+  }
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+  if (!workspaceFolder) {
+    return;
+  }
+  const relative = toPosix(path.relative(workspaceFolder.uri.fsPath, document.uri.fsPath));
+  if (!relative || relative.startsWith('..')) {
+    return;
+  }
+  const tracker = getWorkspaceTracker(workspaceFolder);
+  tracker.history.push(relative);
+  if (tracker.history.length > 10) {
+    tracker.history.shift();
+  }
+}
+
+function getTrackedFilePaths(
+  workspaceFolder: vscode.WorkspaceFolder,
+  activeDocument: vscode.TextDocument | undefined,
+): string[] {
+  const tracker = workspaceTrackers.get(workspaceFolder.uri.toString());
+  const history = tracker?.history ?? [];
+  const counts = new Map<string, { count: number; lastIndex: number }>();
+
+  history.forEach((entry, index) => {
+    const existing = counts.get(entry);
+    if (existing) {
+      existing.count += 1;
+      existing.lastIndex = index;
+    } else {
+      counts.set(entry, { count: 1, lastIndex: index });
+    }
+  });
+
+  const sortedByFrequency = Array.from(counts.entries())
+    .sort((a, b) => {
+      if (b[1].count !== a[1].count) {
+        return b[1].count - a[1].count;
+      }
+      return b[1].lastIndex - a[1].lastIndex;
+    })
+    .map(([filePath]) => filePath);
+
+  const result: string[] = [];
+  const activePath =
+    activeDocument && activeDocument.uri.scheme === 'file'
+      ? toPosix(path.relative(workspaceFolder.uri.fsPath, activeDocument.uri.fsPath))
+      : undefined;
+
+  if (activePath && !activePath.startsWith('..') && activePath !== '') {
+    result.push(activePath);
+  }
+
+  for (const candidate of sortedByFrequency) {
+    if (result.length >= 3) {
+      break;
+    }
+    if (candidate === activePath) {
+      continue;
+    }
+    result.push(candidate);
+  }
+
+  if (result.length < 3) {
+    for (let index = history.length - 1; index >= 0 && result.length < 3; index--) {
+      const candidate = history[index];
+      if (candidate && !result.includes(candidate)) {
+        result.push(candidate);
+      }
+    }
+  }
+
+  return result.slice(0, 3);
+}
+
+function getWorkspaceTracker(workspaceFolder: vscode.WorkspaceFolder): WorkspaceTrackingState {
+  let tracker = workspaceTrackers.get(workspaceFolder.uri.toString());
+  if (!tracker) {
+    tracker = { history: [] };
+    workspaceTrackers.set(workspaceFolder.uri.toString(), tracker);
+  }
+  return tracker;
+}
+
+async function showPrivacyNoticeOnce(context: vscode.ExtensionContext): Promise<void> {
+  const alreadyAcknowledged = context.globalState.get<boolean>(PRIVACY_NOTICE_KEY, false);
+  if (alreadyAcknowledged) {
+    return;
+  }
+  const message =
+    'ContextPack-Pro copies project information to your clipboard. The clipboard may include sensitive data—please review before sharing it with third-party services.';
+  await vscode.window.showInformationMessage(message);
+  await context.globalState.update(PRIVACY_NOTICE_KEY, true);
+}
+
+function buildTree(
+  entries: TreeEntry[],
+  rootName: string,
+  structureMode: string,
+  expandPaths: Set<string>,
+): string {
   const root: TreeNode = {
     name: rootName,
     isDir: true,
     children: [],
     childMap: new Map<string, TreeNode>(),
+    path: '',
   };
 
   for (const entry of entries) {
@@ -311,7 +509,7 @@ function buildTree(entries: TreeEntry[], rootName: string): string {
   sortTree(root);
 
   const lines: string[] = [root.name];
-  renderTreeChildren(root.children, '', lines);
+  renderTreeChildren(root.children, '', lines, structureMode, expandPaths);
   return lines.join('\n');
 }
 
@@ -323,11 +521,13 @@ function insertPath(node: TreeNode, parts: string[], isDir: boolean): void {
   const [head, ...rest] = parts;
   let child = node.childMap.get(head);
   if (!child) {
+    const childPath = node.path ? `${node.path}/${head}` : head;
     child = {
       name: head,
       isDir: rest.length > 0 || isDir,
       children: [],
       childMap: new Map<string, TreeNode>(),
+      path: childPath,
     };
     node.childMap.set(head, child);
     node.children.push(child);
@@ -352,14 +552,23 @@ function sortTree(node: TreeNode): void {
   }
 }
 
-function renderTreeChildren(children: TreeNode[], prefix: string, lines: string[]): void {
+function renderTreeChildren(
+  children: TreeNode[],
+  prefix: string,
+  lines: string[],
+  mode: string,
+  expandPaths: Set<string>,
+): void {
   children.forEach((child, index) => {
     const isLast = index === children.length - 1;
     const branch = isLast ? '└── ' : '├── ';
     lines.push(`${prefix}${branch}${child.name}`);
     const nextPrefix = prefix + (isLast ? '    ' : '│   ');
-    if (child.children.length > 0) {
-      renderTreeChildren(child.children, nextPrefix, lines);
+    const shouldExpand =
+      child.children.length > 0 &&
+      (mode === 'full' || (child.isDir && expandPaths.has(child.path)));
+    if (shouldExpand) {
+      renderTreeChildren(child.children, nextPrefix, lines, mode, expandPaths);
     }
   });
 }

@@ -1,6 +1,6 @@
 {
   "name": "copy-context",
-  "displayName": "Copy Context",
+  "displayName": "ContextPack-Pro",
   "description": "Copy the current project context to your clipboard from VS Code.",
   "version": "0.0.1",
   "publisher": "your-id",
@@ -34,17 +34,17 @@
             "smart"
           ],
           "default": "openEditors",
-          "description": "选择相关文件来源：打开的编辑器、仅当前文件、或后续的智能选择。"
+          "description": "Choose which documents are included when collecting context."
         },
         "copyContext.maxFiles": {
           "type": "number",
           "default": 5,
-          "description": "最多包含的文件数。"
+          "description": "Maximum number of files to include in the clipboard output."
         },
         "copyContext.treeDepth": {
           "type": "number",
           "default": 3,
-          "description": "目录树最大深度。"
+          "description": "Maximum depth for the generated directory tree when using the full structure mode."
         },
         "copyContext.ignoreGlobs": {
           "type": "array",
@@ -57,12 +57,21 @@
             "**/dist/**",
             "**/out/**"
           ],
-          "description": "附加忽略规则（glob）。"
+          "description": "Additional glob patterns to ignore when scanning the workspace."
         },
         "copyContext.maxChars": {
           "type": "number",
           "default": 40000,
-          "description": "剪贴板内容最大字符数（超过将自动裁剪/分块，后续实现）。"
+          "description": "Maximum number of characters allowed in the clipboard payload before truncation."
+        },
+        "copyContext.structureMode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "smart"
+          ],
+          "default": "smart",
+          "description": "Choose between the full tree view or a smart view that expands only the most relevant files."
         }
       }
     }
