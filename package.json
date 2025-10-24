@@ -1,0 +1,87 @@
+{
+  "name": "copy-context",
+  "displayName": "Copy Context",
+  "description": "Copy the current project context to your clipboard from VS Code.",
+  "version": "0.0.1",
+  "publisher": "your-id",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:copyContext.copy",
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "copyContext.copy",
+        "title": "Copy Project Context"
+      }
+    ],
+    "configuration": {
+      "title": "Copy Context",
+      "properties": {
+        "copyContext.sources": {
+          "type": "string",
+          "enum": [
+            "openEditors",
+            "activeOnly",
+            "smart"
+          ],
+          "default": "openEditors",
+          "description": "选择相关文件来源：打开的编辑器、仅当前文件、或后续的智能选择。"
+        },
+        "copyContext.maxFiles": {
+          "type": "number",
+          "default": 5,
+          "description": "最多包含的文件数。"
+        },
+        "copyContext.treeDepth": {
+          "type": "number",
+          "default": 3,
+          "description": "目录树最大深度。"
+        },
+        "copyContext.ignoreGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/dist/**",
+            "**/out/**"
+          ],
+          "description": "附加忽略规则（glob）。"
+        },
+        "copyContext.maxChars": {
+          "type": "number",
+          "default": 40000,
+          "description": "剪贴板内容最大字符数（超过将自动裁剪/分块，后续实现）。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js",
+    "watch": "npm run compile -- --watch",
+    "build": "npm run compile",
+    "lint": "tsc --noEmit",
+    "test": "echo \"(可选)添加集成测试\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.3",
+    "ignore": "^7.0.5"
+  }
+}
