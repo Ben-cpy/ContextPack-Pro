@@ -31,6 +31,7 @@
   ],
   "activationEvents": [
     "onCommand:copyContext.copy",
+    "onCommand:copyContext.toggleTracking",
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
@@ -39,8 +40,20 @@
       {
         "command": "copyContext.copy",
         "title": "Copy Project Context"
+      },
+      {
+        "command": "copyContext.toggleTracking",
+        "title": "ContextPack-Pro: Add/Remove Tracking"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "copyContext.toggleTracking",
+          "group": "navigation@9"
+        }
+      ]
+    },
     "configuration": {
       "title": "Copy Context",
       "properties": {
