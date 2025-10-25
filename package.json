@@ -2,7 +2,7 @@
   "name": "copy-context",
   "displayName": "ContextPack-Pro",
   "description": "Copy the current project context to your clipboard from VS Code.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "Ben-cpy",
   "author": "Ben",
   "license": "MIT",
