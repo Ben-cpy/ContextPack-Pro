@@ -63,6 +63,13 @@ type ManualTrackingStorage = {
   directories: Record<string, string[]>;
 };
 
+const DEFAULT_IGNORE_GLOBS = [
+  '**/__pycache__/**',
+  '**/*.pyc',
+  '**/*.pyo',
+  '**/*.pyd',
+];
+
 const PRIVACY_NOTICE_KEY = 'copyContext.privacyNoticeAcknowledged';
 const WORKSPACE_MANUAL_TRACK_KEY_PREFIX = 'copyContext.manualSelections:';
 const MAX_TRACKED_FILES_PER_DIRECTORY = 200;
@@ -180,7 +187,14 @@ async function toggleManualTracking(resource: vscode.Uri | undefined): Promise<v
       return;
     }
 
-    const collectedFiles = await collectFilesUnderDirectory(workspaceFolder, relative);
+    const toggleConfig = vscode.workspace.getConfiguration('copyContext', workspaceFolder.uri);
+    const toggleIgnoreSetting = toggleConfig.get<string[]>('ignoreGlobs', []);
+    const toggleIgnoreGlobs = combineIgnoreGlobs(toggleIgnoreSetting);
+    const collectedFiles = await collectFilesUnderDirectory(
+      workspaceFolder,
+      relative,
+      toggleIgnoreGlobs,
+    );
     tracker.manualDirectories.set(relative, new Set(collectedFiles));
     await saveManualTracking(workspaceFolder, tracker);
     const label = collectedFiles.length === 1 ? 'file' : 'files';
@@ -210,7 +224,8 @@ async function buildContextMarkdown(): Promise<CopyContextResult> {
 
   const config = vscode.workspace.getConfiguration('copyContext');
   const treeDepth = config.get<number>('treeDepth', 3);
-  const ignoreGlobs = config.get<string[]>('ignoreGlobs', []);
+  const ignoreGlobsSetting = config.get<string[]>('ignoreGlobs', []);
+  const effectiveIgnoreGlobs = combineIgnoreGlobs(ignoreGlobsSetting);
   const sourceStrategy = config.get<string>('sources', 'openEditors');
   const maxFiles = config.get<number>('maxFiles', 5);
   const maxCharsSetting = config.get<number>('maxChars', 40000);
@@ -224,7 +239,7 @@ async function buildContextMarkdown(): Promise<CopyContextResult> {
   const treeText = await generateProjectTree(
     workspaceFolder,
     treeDepth,
-    ignoreGlobs,
+    effectiveIgnoreGlobs,
     structureMode,
     trackedSelections.treeHighlights,
   );
@@ -233,6 +248,7 @@ async function buildContextMarkdown(): Promise<CopyContextResult> {
     sourceStrategy,
     maxFiles,
     trackedSelections.files,
+    effectiveIgnoreGlobs,
   );
 
   const now = new Date();
@@ -266,11 +282,6 @@ async function buildContextMarkdown(): Promise<CopyContextResult> {
       const sectionLines = ['', `### ${file.path} (${file.loc} LOC)`, '', codeFence, file.content, '```'];
       segments.push({ text: sectionLines.join('\n'), label: file.path });
     }
-  }
-
-  if (skipped.length > 0) {
-    const skippedLines = ['', '## Skipped Files', '', ...skipped.map((entry) => `- ${entry}`)];
-    segments.push({ text: skippedLines.join('\n'), required: true });
   }
 
   const { text, truncated, truncatedFiles, includedFiles } = composeSegments(
@@ -373,11 +384,17 @@ async function collectRelevantFiles(
   sourceStrategy: string,
   maxFiles: number,
   trackedFiles: string[],
+  ignoreGlobs: string[],
 ): Promise<CollectionResult> {
   const documents = new Map<string, vscode.TextDocument>();
   const uniqueTrackedPaths = Array.from(
     new Set(trackedFiles.filter((entry): entry is string => Boolean(entry))),
   );
+
+  const ig = ignore();
+  if (ignoreGlobs.length > 0) {
+    ig.add(ignoreGlobs);
+  }
 
   const activeEditor = vscode.window.activeTextEditor;
   if (sourceStrategy === 'smart') {
@@ -412,6 +429,9 @@ async function collectRelevantFiles(
       if (documents.has(key)) {
         continue;
       }
+      if (ig.ignores(relative)) {
+        continue;
+      }
       try {
         suppressTracking = true;
         const document = await vscode.workspace.openTextDocument(uri);
@@ -441,6 +461,9 @@ async function collectRelevantFiles(
 
     const relative = toPosix(path.relative(rootPath, document.uri.fsPath));
     if (!relative || relative.startsWith('..')) {
+      continue;
+    }
+    if (ig.ignores(relative)) {
       continue;
     }
 
@@ -614,6 +637,13 @@ function loadManualTracking(workspaceFolder: vscode.WorkspaceFolder): ManualTrac
   if (!extensionContext) {
     return { files: [], directories: {} };
   }
+  const config = vscode.workspace.getConfiguration('copyContext', workspaceFolder.uri);
+  const ignoreSetting = config.get<string[]>('ignoreGlobs', []);
+  const effectiveIgnoreGlobs = combineIgnoreGlobs(ignoreSetting);
+  const ig = ignore();
+  if (effectiveIgnoreGlobs.length > 0) {
+    ig.add(effectiveIgnoreGlobs);
+  }
   const stored = extensionContext.workspaceState.get<ManualTrackingStorage>(
     getManualTrackingKey(workspaceFolder),
     { files: [], directories: {} },
@@ -623,18 +653,28 @@ function loadManualTracking(workspaceFolder: vscode.WorkspaceFolder): ManualTrac
   }
 
   const files = Array.isArray(stored.files)
-    ? Array.from(new Set(stored.files.map((entry) => toPosix(entry)).filter((entry) => !!entry)))
+    ? Array.from(
+        new Set(
+          stored.files
+            .map((entry) => toPosix(entry))
+            .filter((entry) => !!entry && !ig.ignores(entry)),
+        ),
+      )
     : [];
   const directories: Record<string, string[]> = {};
   if (stored.directories && typeof stored.directories === 'object') {
     for (const [dir, entries] of Object.entries(stored.directories)) {
       if (Array.isArray(entries)) {
         const normalizedDir = toPosix(dir);
-        if (!normalizedDir) {
+        if (!normalizedDir || ig.ignores(normalizedDir)) {
           continue;
         }
         const normalizedEntries = Array.from(
-          new Set(entries.map((entry) => toPosix(entry)).filter((entry) => !!entry)),
+          new Set(
+            entries
+              .map((entry) => toPosix(entry))
+              .filter((entry) => !!entry && !ig.ignores(entry)),
+          ),
         );
         directories[normalizedDir] = normalizedEntries;
       }
@@ -663,6 +703,7 @@ async function saveManualTracking(
 async function collectFilesUnderDirectory(
   workspaceFolder: vscode.WorkspaceFolder,
   relativeDir: string,
+  ignoreGlobs: string[],
 ): Promise<string[]> {
   const absolute = path.join(workspaceFolder.uri.fsPath, relativeDir);
   try {
@@ -672,9 +713,14 @@ async function collectFilesUnderDirectory(
       dot: true,
       followSymbolicLinks: false,
     });
+    const ig = ignore();
+    if (ignoreGlobs.length > 0) {
+      ig.add(ignoreGlobs);
+    }
     return entries
-      .slice(0, MAX_TRACKED_FILES_PER_DIRECTORY)
-      .map((entry) => toPosix(path.join(relativeDir, entry)));
+      .map((entry) => toPosix(path.join(relativeDir, entry)))
+      .filter((entry) => Boolean(entry) && !ig.ignores(entry))
+      .slice(0, MAX_TRACKED_FILES_PER_DIRECTORY);
   } catch {
     return [];
   }
@@ -774,6 +820,19 @@ function renderTreeChildren(
       renderTreeChildren(child.children, nextPrefix, lines, mode, expandPaths);
     }
   });
+}
+
+function combineIgnoreGlobs(customGlobs: string[] = []): string[] {
+  const seen = new Set<string>();
+  const combined: string[] = [];
+  for (const pattern of [...DEFAULT_IGNORE_GLOBS, ...customGlobs]) {
+    if (!pattern || seen.has(pattern)) {
+      continue;
+    }
+    seen.add(pattern);
+    combined.push(pattern);
+  }
+  return combined;
 }
 
 function toPosix(value: string): string {
